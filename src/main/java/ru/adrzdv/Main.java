@@ -4,6 +4,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.Duration;
@@ -23,12 +24,11 @@ public class Main {
         }
 
         String filePath = args[0];
-        String content = new String(Files.readAllBytes(Paths.get(filePath)), "UTF-8");
-
+        String content = new String(Files.readAllBytes(Paths.get(filePath)), StandardCharsets.UTF_8)
+                .replace("\uFEFF", "");
         JSONObject root = new JSONObject(content);
         JSONArray tickets = root.getJSONArray("tickets");
-
-        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("dd.MM.yy HH:mm");
+        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("dd.MM.yy H:mm");
         Map<String, Long> minFlightTimeByCarrier = new TreeMap<>();
         List<Integer> prices = new ArrayList<>();
 
@@ -64,7 +64,7 @@ public class Main {
             System.out.printf("%s: минимальное время полёта %dч %dм%n", entry.getKey(), hours, minutes);
         }
         double averagePrice = prices.stream().mapToInt(Integer::intValue).average().orElse(0);
-        List<Integer> sortedPrices = prices.stream().sorted().collect(Collectors.toList());
+        List<Integer> sortedPrices = prices.stream().sorted().toList();
         double medianPrice;
         int size = sortedPrices.size();
 
