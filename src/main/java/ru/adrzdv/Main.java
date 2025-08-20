@@ -1,79 +1,104 @@
 package ru.adrzdv;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.reflect.TypeToken;
 
+import java.io.FileReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.time.Duration;
+import java.lang.reflect.Type;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.stream.Collectors;
 
 public class Main {
-    public static void main(String[] args) throws IOException {
-        if (args.length != 1) {
-            System.err.println("Usage: java -jar app.jar <path-to-tickets.json>");
+
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yy H:mm");
+
+    public static void main(String[] args) {
+        if (args.length < 3) {
+            System.err.println("Usage: java -jar app.jar <path-to-tickets.json> <origin code> <destination code>");
             System.exit(1);
         }
 
         String filePath = args[0];
-        String content = new String(Files.readAllBytes(Paths.get(filePath)), StandardCharsets.UTF_8)
-                .replace("\uFEFF", "");
-        JSONObject root = new JSONObject(content);
-        JSONArray tickets = root.getJSONArray("tickets");
-        DateTimeFormatter dtf = DateTimeFormatter.ofPattern("dd.MM.yy H:mm");
-        Map<String, Long> minFlightTimeByCarrier = new TreeMap<>();
-        List<Integer> prices = new ArrayList<>();
+        String origin = args[1];
+        String destination = args[2];
 
-        for (int i = 0; i < tickets.length(); i++) {
-            JSONObject ticket = tickets.getJSONObject(i);
+        try (FileReader reader = new FileReader(filePath)) {
+            Gson gson = new Gson();
 
-            if (!"VVO".equals(ticket.getString("origin")) || !"TLV".equals(ticket.getString("destination"))) {
-                continue;
+            JsonObject root = gson.fromJson(reader, JsonObject.class);
+            Type listType = new TypeToken<List<Ticket>>() {
+            }.getType();
+            List<Ticket> tickets = gson.fromJson(root.get("tickets"), listType);
+
+            List<Ticket> filterdList = tickets.stream()
+                    .filter(t -> origin.equalsIgnoreCase(t.origin()) && destination.equalsIgnoreCase(t.destination()))
+                    .toList();
+
+            if (filterdList.isEmpty()) {
+                System.out.println("Нет билетов по маршруту " + origin + " -> " + destination);
+                return;
             }
 
-            LocalDateTime departure = LocalDateTime.parse(
-                    ticket.getString("departure_date") + " " + ticket.getString("departure_time"),
-                    dtf
-            );
-            LocalDateTime arrival = LocalDateTime.parse(
-                    ticket.getString("arrival_date") + " " + ticket.getString("arrival_time"),
-                    dtf
-            );
+            List<Integer> prices = getPrices(filterdList);
 
-            long durationMinutes = Duration.between(departure, arrival).toMinutes();
+            double average = prices.stream().mapToInt(Integer::intValue).average().orElse(0.0);
+            double diff = Math.abs(average - getMedian(prices));
 
-            String carrier = ticket.getString("carrier");
-            int price = ticket.getInt("price");
+            System.out.printf("%.2f %.2f %.2f%n", average, getMedian(prices), diff);
 
-            minFlightTimeByCarrier.merge(carrier, durationMinutes, Math::min);
-
-            prices.add(price);
+        } catch (IOException e) {
+            System.err.println("Ошибка чтения файла: " + e.getMessage());
+            System.exit(2);
+        } catch (JsonParseException e) {
+            System.err.println("Некорректный JSON: " + e.getMessage());
+            System.exit(3);
+        } catch (DateTimeParseException e) {
+            System.err.println("Ошибка парсинга даты/времени: " + e.getParsedString());
+            System.exit(4);
         }
+    }
 
-        for (Map.Entry<String, Long> entry : minFlightTimeByCarrier.entrySet()) {
-            long hours = entry.getValue() / 60;
-            long minutes = entry.getValue() % 60;
-            System.out.printf("%s: минимальное время полёта %dч %dм%n", entry.getKey(), hours, minutes);
-        }
-        double averagePrice = prices.stream().mapToInt(Integer::intValue).average().orElse(0);
-        List<Integer> sortedPrices = prices.stream().sorted().toList();
-        double medianPrice;
-        int size = sortedPrices.size();
+    private static long getFlightMinutes(Ticket ticket) {
+        LocalDateTime departure = LocalDateTime.parse(ticket.departureDate() + " " + ticket.departureTime(), FORMATTER);
+        LocalDateTime arrival = LocalDateTime.parse(ticket.arrivalDate() + " " + ticket.arrivalTime(), FORMATTER);
+        return ChronoUnit.MINUTES.between(departure, arrival);
+    }
 
-        if (size % 2 == 0) {
-            medianPrice = (sortedPrices.get(size / 2 - 1) + sortedPrices.get(size / 2)) / 2.0;
+    private static double getMedian(List<Integer> tickets) {
+        List<Integer> sorted = tickets.stream().sorted().toList();
+
+        if (sorted.size() % 2 == 0) {
+            return (sorted.get(sorted.size() / 2 - 1) + sorted.get(sorted.size() / 2)) / 2.0;
         } else {
-            medianPrice = sortedPrices.get(size / 2);
+            return sorted.get(sorted.size() / 2);
         }
-        double difference = Math.abs(averagePrice - medianPrice);
-        System.out.printf("Средняя цена: %.2f%nМедиана цены: %.2f%nРазница: %.2f%n", averagePrice, medianPrice, difference);
+    }
+
+    private static List<Integer> getPrices(List<Ticket> tickets) {
+        Map<String, Long> minByCarrier = new TreeMap<>();
+
+        List<Integer> prices = new ArrayList<>();
+
+        for (Ticket t : tickets) {
+            long minutes = getFlightMinutes(t);
+            minByCarrier.merge(t.carrier(), minutes, Math::min);
+            prices.add(t.price());
+        }
+
+        for (Map.Entry<String, Long> e : minByCarrier.entrySet()) {
+            long h = e.getValue() / 60;
+            long m = e.getValue() % 60;
+            System.out.printf("%s: минимальное время полёта %dч %dм%n", e.getKey(), h, m);
+        }
+        return prices;
     }
 }
